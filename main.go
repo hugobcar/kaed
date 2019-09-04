@@ -4,8 +4,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/route53"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/client-go/tools/cache"
@@ -46,8 +52,19 @@ type addJSONs struct {
 	} `json:"spec"`
 	Status struct {
 		LoadBalancer struct {
+			Ingress []struct {
+				Hostname string `json:"hostname"`
+			} `json:"ingress"`
 		} `json:"loadBalancer"`
 	} `json:"status"`
+}
+
+func checkEmptyVariable(name, variable string) {
+	if len(strings.TrimSpace(variable)) == 0 {
+		fmt.Printf("Please, set %s", name)
+
+		os.Exit(2)
+	}
 }
 
 var (
@@ -56,6 +73,21 @@ var (
 
 func main() {
 	var addJSON addJSONs
+	var host, name string
+
+	// Envs parameters
+	ttl, err := strconv.ParseInt(os.Getenv("kaed_ttl"), 10, 64)
+	if err != nil {
+		fmt.Println("Error to convert string to int64 (kaed_ttl)")
+		panic(err.Error())
+	}
+	domain := os.Getenv("kaed_domain")
+	zoneID := os.Getenv("kaed_zoneid")
+
+	// Test empty confs variables
+	checkEmptyVariable("Env: kaed_ttl", strconv.FormatInt(ttl, 10))
+	checkEmptyVariable("Env: kaed_domain", domain)
+	checkEmptyVariable("Env: kaed_zoneid", zoneID)
 
 	flag.Parse()
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
@@ -66,6 +98,14 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
+
+	sess, err := session.NewSession()
+	if err != nil {
+		fmt.Println("failed to create session,", err)
+		return
+	}
+
+	svc := route53.New(sess)
 
 	watchlist := cache.NewListWatchFromClient(clientset.Core().RESTClient(), "services", v1.NamespaceAll, fields.Everything())
 	// watchlist := cache.NewListWatchFromClient(clientset.Core().RESTClient(), "services", "testehugo", fields.Everything())
@@ -78,19 +118,40 @@ func main() {
 				objMarshal, _ := json.Marshal(obj)
 				_ = json.Unmarshal(objMarshal, &addJSON)
 
-				fmt.Println("ADD -", "Name:", addJSON.Metadata.Name, "NameSpace:", addJSON.Metadata.Namespace, "Type:", addJSON.Spec.Type)
+				if addJSON.Spec.Type == "LoadBalancer" {
+					host = addJSON.Status.LoadBalancer.Ingress[0].Hostname
+					name = addJSON.Metadata.Name + "-" + addJSON.Metadata.Namespace + "." + domain
+
+					fmt.Println("ADD -", "Name:", addJSON.Metadata.Name, "- NameSpace:", addJSON.Metadata.Namespace, "- Type:", addJSON.Spec.Type, "- Host:", host)
+
+					createRecord(svc, name, host, zoneID, ttl)
+				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				objMarshal, _ := json.Marshal(obj)
 				_ = json.Unmarshal(objMarshal, &addJSON)
 
-				fmt.Println("DELETE -", "Name:", addJSON.Metadata.Name, "NameSpace:", addJSON.Metadata.Namespace, "Type:", addJSON.Spec.Type)
+				if addJSON.Spec.Type == "LoadBalancer" {
+					host = addJSON.Status.LoadBalancer.Ingress[0].Hostname
+					name = addJSON.Metadata.Name + "-" + addJSON.Metadata.Namespace + "." + domain
+
+					fmt.Println("DELETE -", "Name:", addJSON.Metadata.Name, "- NameSpace:", addJSON.Metadata.Namespace, "- Type:", addJSON.Spec.Type, "- Host:", host)
+
+					deleteRecord(svc, name, host, zoneID, ttl)
+				}
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
 				objMarshal, _ := json.Marshal(newObj)
 				_ = json.Unmarshal(objMarshal, &addJSON)
 
-				fmt.Println("EDIT -", "Name:", addJSON.Metadata.Name, "NameSpace:", addJSON.Metadata.Namespace, "Type:", addJSON.Spec.Type)
+				if addJSON.Spec.Type == "LoadBalancer" {
+					host = addJSON.Status.LoadBalancer.Ingress[0].Hostname
+					name = addJSON.Metadata.Name + "-" + addJSON.Metadata.Namespace + "." + domain
+
+					fmt.Println("EDIT -", "Name:", addJSON.Metadata.Name, "- NameSpace:", addJSON.Metadata.Namespace, "- Type:", addJSON.Spec.Type, "- Host:", host)
+
+					createRecord(svc, name, host, zoneID, ttl)
+				}
 			},
 		},
 	)
@@ -99,4 +160,67 @@ func main() {
 	for {
 		time.Sleep(time.Second)
 	}
+}
+
+func createRecord(svc *route53.Route53, name, target, zoneID string, ttl int64) {
+	params := &route53.ChangeResourceRecordSetsInput{
+		ChangeBatch: &route53.ChangeBatch{
+			Changes: []*route53.Change{
+				{
+					Action: aws.String("UPSERT"),
+					ResourceRecordSet: &route53.ResourceRecordSet{
+						Name: aws.String(name),
+						Type: aws.String("CNAME"),
+						ResourceRecords: []*route53.ResourceRecord{
+							{
+								Value: aws.String(target),
+							},
+						},
+						TTL: aws.Int64(ttl),
+					},
+				},
+			},
+			Comment: aws.String("Sample update."),
+		},
+		HostedZoneId: aws.String(zoneID),
+	}
+	resp, err := svc.ChangeResourceRecordSets(params)
+
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+
+	fmt.Println("Change Response:")
+	fmt.Println(resp)
+}
+
+func deleteRecord(svc *route53.Route53, name, host, zoneID string, ttl int64) {
+	request := &route53.ChangeResourceRecordSetsInput{
+		ChangeBatch: &route53.ChangeBatch{
+			Changes: []*route53.Change{
+				{
+					Action: aws.String("DELETE"),
+					ResourceRecordSet: &route53.ResourceRecordSet{
+						Name: aws.String(name),
+						Type: aws.String("CNAME"),
+						ResourceRecords: []*route53.ResourceRecord{
+							{
+								Value: aws.String(host),
+							},
+						},
+						TTL: aws.Int64(ttl),
+					},
+				},
+			},
+		},
+		HostedZoneId: aws.String(zoneID),
+	}
+	resp, err := svc.ChangeResourceRecordSets(request)
+	if err != nil {
+		fmt.Println("Unable to delete DNS Record", err)
+	}
+
+	fmt.Println("Delete Response:")
+	fmt.Println(resp)
 }

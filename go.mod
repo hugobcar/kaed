@@ -1,4 +1,4 @@
-module github.com/hugobcar/k8s-registry-dns
+module github.com/hugobcar/kaed
 
 go 1.12
 

@@ -76,18 +76,18 @@ func main() {
 	var host, name string
 
 	// Envs parameters
-	ttl, err := strconv.ParseInt(os.Getenv("kaed_ttl"), 10, 64)
+	ttl, err := strconv.ParseInt(os.Getenv("KAED_TTL"), 10, 64)
 	if err != nil {
-		fmt.Println("Error to convert string to int64 (kaed_ttl)")
+		fmt.Println("Error to convert string to int64 (KAED_TTL)")
 		panic(err.Error())
 	}
-	domain := os.Getenv("kaed_domain")
-	zoneID := os.Getenv("kaed_zoneid")
+	domain := os.Getenv("KAED_DOMAIN")
+	zoneID := os.Getenv("KAED_ZONEID")
 
 	// Test empty confs variables
-	checkEmptyVariable("Env: kaed_ttl", strconv.FormatInt(ttl, 10))
-	checkEmptyVariable("Env: kaed_domain", domain)
-	checkEmptyVariable("Env: kaed_zoneid", zoneID)
+	checkEmptyVariable("Env: KAED_TTL", strconv.FormatInt(ttl, 10))
+	checkEmptyVariable("Env: KAED_DOMAIN", domain)
+	checkEmptyVariable("Env: KAED_ZONEID", zoneID)
 
 	flag.Parse()
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)

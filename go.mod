@@ -1,4 +1,4 @@
-module github.com/hugobcar/kaed
+module github.com/hugobcar/anus
 
 go 1.12
 
